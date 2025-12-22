@@ -23,6 +23,8 @@ SUPABASE_STORAGE_BUCKET=parking-images
 ```bash
 uvicorn main:app --reload --port 8000
 ```
+5. Go to hf and download model: `license-plate-finetune-v1x.pt` and place it in /model_ckpt folder <br>
+Link: `https://huggingface.co/morsetechlab/yolov11-license-plate-detection/tree/main`
 
 ## API Documentation
 
