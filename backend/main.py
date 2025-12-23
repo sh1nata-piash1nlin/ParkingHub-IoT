@@ -6,31 +6,42 @@ from datetime import datetime
 import uuid
 from typing import Optional
 from dotenv import load_dotenv
-from ultralytics import YOLO
 from PIL import Image
 import io
 from pathlib import Path
-import torch
+import traceback  # debug
+from PIL import ImageOps
 import numpy as np
-from transformers import TrOCRProcessor, VisionEncoderDecoderModel
-import traceback #debug 
+import tempfile
+from fast_alpr import ALPR
+
 # Load environment variables
 load_dotenv()
 
 app = FastAPI(title="IoT Smart Parking API", version="1.0.0")
-model = YOLO('model_ckpt/license-plate-finetune-v1x.pt')
 
-ocr_processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-printed")
-ocr_model = VisionEncoderDecoderModel.from_pretrained("DunnBC22/trocr-base-printed_license_plates_ocr")
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-ocr_model = ocr_model.to(device)
-
-if device == "cuda":
-    ocr_model = ocr_model.half()
-
-ocr_model.eval()
-
+# Initialize FastALPR
+# Note: ALPR.predict() expects either an image path or a BGR numpy frame. We'll pass the saved image path.
+# We try CUDA providers first (for GTX 1650Ti). If CUDA isn't available, fall back to CPU.
+try:
+    alpr = ALPR(
+        detector_model=os.getenv("FASTALPR_DETECTOR_MODEL", "yolo-v9-t-384-license-plate-end2end"),
+        ocr_model=os.getenv("FASTALPR_OCR_MODEL", "cct-xs-v1-global-model"),
+        ocr_device=os.getenv("FASTALPR_OCR_DEVICE", "cuda"),
+        detector_providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        ocr_providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        detector_conf_thresh=float(os.getenv("FASTALPR_DETECTOR_CONF", "0.4")),
+    )
+except Exception as e:
+    print(f"[FastALPR] CUDA init failed, falling back to CPU. Reason: {e}")
+    alpr = ALPR(
+        detector_model=os.getenv("FASTALPR_DETECTOR_MODEL", "yolo-v9-t-384-license-plate-end2end"),
+        ocr_model=os.getenv("FASTALPR_OCR_MODEL", "cct-xs-v1-global-model"),
+        ocr_device="cpu",
+        detector_providers=["CPUExecutionProvider"],
+        ocr_providers=["CPUExecutionProvider"],
+        detector_conf_thresh=float(os.getenv("FASTALPR_DETECTOR_CONF", "0.4")),
+    )
 
 # CORS middleware
 app.add_middleware(
@@ -52,9 +63,76 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
+def _pick_best_plate(alpr_results):
+    best_text = None
+    best_score = -1.0
+
+    for r in alpr_results or []:
+        if not r or not getattr(r, "ocr", None):
+            continue
+
+        text = (getattr(r.ocr, "text", "") or "").strip().replace(" ", "")
+        if not text:
+            continue
+
+        det_conf = 0.0
+        if getattr(r, "detection", None) is not None:
+            det_conf = float(getattr(r.detection, "confidence", 0.0) or 0.0)
+
+        ocr_conf = getattr(r.ocr, "confidence", None)
+        ocr_conf = float(ocr_conf) if ocr_conf is not None else None
+
+        # Prefer OCR confidence if available; otherwise prefer longer strings, then detection confidence
+        score = (ocr_conf * 100.0 if ocr_conf is not None else 0.0) + (len(text) * 2.0) + det_conf
+
+        if score > best_score:
+            best_score = score
+            best_text = text
+
+    return best_text
+
+def fastalpr_read_plate(alpr, pil_img, saved_path_str):
+    # 1) Normal prediction (path)
+    try:
+        res = alpr.predict(saved_path_str)
+        text = _pick_best_plate(res)
+        if text and len(text) >= 9:
+            return text
+    except Exception:
+        pass
+
+    # 2) Retry with a little right padding (helps when last char is near the border)
+    try:
+        padded = ImageOps.expand(pil_img, border=(0, 0, 80, 0), fill="white")
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=True) as f:
+            padded.save(f.name, format="JPEG", quality=95)
+            res = alpr.predict(f.name)
+            text2 = _pick_best_plate(res)
+            if text2 and len(text2) >= 9:
+                return text2
+    except Exception:
+        pass
+
+    # 3) Retry with upscale + padding (helps on tilted plates)
+    try:
+        w, h = pil_img.size
+        up = pil_img.resize((w * 2, h * 2), resample=Image.Resampling.BICUBIC)
+        up = ImageOps.expand(up, border=(0, 0, 120, 0), fill="white")
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=True) as f:
+            up.save(f.name, format="JPEG", quality=95)
+            res = alpr.predict(f.name)
+            text3 = _pick_best_plate(res)
+            if text3:
+                return text3
+    except Exception:
+        pass
+
+    return None
+
 @app.get("/")
 async def root():
     return {"message": "IoT Smart Parking API", "version": "1.0.0"}
+
 
 @app.get("/health")
 async def health():
@@ -69,11 +147,11 @@ async def esp32_upload(
 ):
     """
     Endpoint for ESP32-CAM to upload RFID ID and license plate image.
-    
+
     Args:
         rfid_id: RFID card ID as string
         image: JPEG image file
-    
+
     Returns:
         Plain text rfid_id or JSON with rfid_id
     """
@@ -81,7 +159,7 @@ async def esp32_upload(
         # Validate image type
         if not image.content_type or not image.content_type.startswith("image/"):
             raise HTTPException(status_code=400, detail="File must be an image")
-        
+
         # Read image bytes
         image_bytes = await image.read()
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -96,47 +174,42 @@ async def esp32_upload(
         print("Saved image to:", save_path)
         print("Current working dir:", os.getcwd())
 
-        # detect license plate text using 
-        results = model.predict(source=str(save_path), verbose=False)
-
+        # Detect license plate text using FastALPR (end-to-end: detection + OCR)
         plate_text = None
-        detections_json = results[0].to_json()
+        try:
+            alpr_results = alpr.predict(str(save_path))
 
-        boxes = results[0].boxes
-        if boxes is not None and len(boxes) > 0:
-            conf = boxes.conf.detach().cpu().numpy()
-            best_i = int(np.argmax(conf))
+            if alpr_results:
+                def score(r):
+                    if not r or not getattr(r, "ocr", None):
+                        return -1.0
+                    text = (getattr(r.ocr, "text", "") or "").strip().replace(" ", "")
+                    if not text:
+                        return -1.0
 
-            x1, y1, x2, y2 = boxes.xyxy[best_i].detach().cpu().tolist()
-            w, h = img.size
+                    ocr_conf = getattr(r.ocr, "confidence", None)
+                    ocr_conf = float(ocr_conf) if ocr_conf is not None else 0.0
 
-            pad = 0.3
-            dx = int((x2 - x1) * pad)
-            dy = int((y2 - y1) * pad)
+                    det_conf = 0.0
+                    if getattr(r, "detection", None) is not None:
+                        det_conf = float(getattr(r.detection, "confidence", 0.0) or 0.0)
 
-            x1 = int(max(0, x1 - dx))
-            y1 = int(max(0, y1 - dy))
-            x2 = int(min(w, x2 + dx))
-            y2 = int(min(h, y2 + dy))
+                    # prefer OCR confidence + longer strings (helps avoid missing last char)
+                    return (ocr_conf * 100.0) + (len(text) * 2.0) + det_conf
 
-            if x2 > x1 and y2 > y1:
-                plate_crop = img.crop((x1, y1, x2, y2))
-
-                pixel_values = ocr_processor(images=plate_crop, return_tensors="pt").pixel_values.to(device)
-                if device == "cuda":
-                    pixel_values = pixel_values.half()
-
-                with torch.inference_mode():
-                    generated_ids = ocr_model.generate(pixel_values, max_new_tokens=16, num_beams=5)
-                plate_text = ocr_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-                plate_text = plate_text.strip().replace(" ", "")
+                best = max(alpr_results, key=score)
+                if best and best.ocr and best.ocr.text:
+                    plate_text = best.ocr.text.strip().replace(" ", "")
+        except Exception as alpr_error:
+            print(f"FastALPR failed: {alpr_error}")
+            plate_text = None
 
         # Generate unique filename
         original_name = image.filename or "image.jpg"
         file_extension = original_name.split(".")[-1] if "." in original_name else "jpg"
         filename = f"{uuid.uuid4()}.{file_extension}"
         file_path = f"parking/{filename}"
-        
+
         # Upload image to Supabase Storage
         try:
             # Try to remove existing file first (if any) to avoid conflicts
@@ -144,15 +217,15 @@ async def esp32_upload(
                 supabase.storage.from_(SUPABASE_STORAGE_BUCKET).remove([file_path])
             except:
                 pass  # File doesn't exist, which is fine
-            
+
             storage_response = supabase.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
                 file_path,
                 image_bytes,
-                file_options={"content-type": image.content_type}
+                file_options={"content-type": image.content_type},
             )
         except Exception as storage_error:
             raise HTTPException(status_code=500, detail=f"Failed to upload image to storage: {str(storage_error)}")
-        
+
         # Get public URL for the image
         try:
             public_url_response = supabase.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(file_path)
@@ -167,18 +240,22 @@ async def esp32_upload(
 
         try:
             # 1) Get all active slots from parking_slots table
-            slots_resp = supabase.table("parking_slots")\
-                .select("slot_name, is_active")\
-                .eq("is_active", True)\
+            slots_resp = (
+                supabase.table("parking_slots")
+                .select("slot_name, is_active")
+                .eq("is_active", True)
                 .execute()
+            )
 
             all_slots = [row["slot_name"] for row in (slots_resp.data or []) if row.get("slot_name")]
 
             # 2) Scan all events chronologically to determine which slots are currently occupied
-            events_resp = supabase.table("parking_events")\
-                .select("rfid_id, parking_slot, event_type, created_at")\
-                .order("created_at", desc=False)\
+            events_resp = (
+                supabase.table("parking_events")
+                .select("rfid_id, parking_slot, event_type, created_at")
+                .order("created_at", desc=False)
                 .execute()
+            )
 
             rfid_state = {}  # rfid_id -> {"slot": str, "status": "IN" | "OUT"}
             for ev in events_resp.data or []:
@@ -229,12 +306,12 @@ async def esp32_upload(
             "parking_slot": slot_to_save,
             "license_plate": plate_text,
         }
-        
+
         db_response = supabase.table("parking_events").insert(event_data).execute()
-        
+
         if not db_response.data:
             raise HTTPException(status_code=500, detail="Failed to insert parking event")
-        
+
         # Return rfid_id and slot suggestions as JSON
         return {
             "rfid_id": rfid_id,
@@ -242,12 +319,13 @@ async def esp32_upload(
             "suggested_slot": suggested_slot,
             "available_slots": available_slots,
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        traceback.print_exc()  #debug 
+        traceback.print_exc()  # debug
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 
 
 @app.get("/api/v1/parking-events")

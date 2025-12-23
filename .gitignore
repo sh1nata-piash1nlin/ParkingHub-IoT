@@ -17,7 +17,7 @@ backend/dist/
 backend/build/
 backend/data/
 backend/model_ckpt/
-
+backend/main_backup.py 
 # Frontend / Node
 frontend/node_modules/
 frontend/.next/

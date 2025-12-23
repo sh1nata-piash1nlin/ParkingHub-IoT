@@ -10,4 +10,5 @@ transformers
 torch
 torchvision
 pillow 
-
+fast-alpr
+onnxruntime-gpu
