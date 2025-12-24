@@ -1,17 +1,17 @@
 'use client'
 
 import { useRef, useState } from 'react'
-import { Camera, UploadCloud, CheckCircle, AlertCircle } from 'lucide-react'
+import { Camera, UploadCloud, CheckCircle, AlertCircle, LogOut } from 'lucide-react'
 
-interface CarInUploadProps {
+interface CarOutUploadProps {
   onUploaded?: (payload: {
     rfid_id: string
     license_plate: string | null
-    suggested_slot: string | null
+    parking_slot: string | null
   }) => void
 }
 
-export default function CarInUpload({ onUploaded }: CarInUploadProps) {
+export default function CarOutUpload({ onUploaded }: CarOutUploadProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [file, setFile] = useState<File | null>(null)
@@ -19,6 +19,7 @@ export default function CarInUpload({ onUploaded }: CarInUploadProps) {
   const [status, setStatus] = useState<'idle' | 'uploading' | 'success' | 'error'>('idle')
   const [message, setMessage] = useState<string | null>(null)
   const [detectedPlate, setDetectedPlate] = useState<string | null>(null)
+  const [parkingSlot, setParkingSlot] = useState<string | null>(null)
 
   const handleChooseFile = () => {
     fileInputRef.current?.click()
@@ -49,12 +50,13 @@ export default function CarInUpload({ onUploaded }: CarInUploadProps) {
       setStatus('uploading')
       setMessage(null)
       setDetectedPlate(null)
+      setParkingSlot(null)
 
-      // Convert file to array buffer for raw image upload
+      // For out-upload, we need to send the image as raw bytes (like ESP32 does)
+      // First, convert file to blob, then to array buffer
       const imageBlob = await file.arrayBuffer()
       
-      // Send rfid_id as query parameter and image as raw bytes in body
-      const apiUrl = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/esp32/in-upload?rfid_id=${encodeURIComponent(rfid.trim())}`
+      const apiUrl = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/esp32/out-upload?rfid_id=${encodeURIComponent(rfid.trim())}`
       const res = await fetch(apiUrl, {
         method: 'POST',
         headers: {
@@ -66,33 +68,53 @@ export default function CarInUpload({ onUploaded }: CarInUploadProps) {
       const text = await res.text()
 
       if (!res.ok) {
-        throw new Error(text || `Upload failed (${res.status})`)
+        // Try to parse error message from response
+        let errorMessage = `Upload failed (${res.status})`
+        try {
+          const errorData = JSON.parse(text)
+          if (errorData.detail) {
+            errorMessage = errorData.detail
+          }
+        } catch {
+          if (text) {
+            errorMessage = text
+          }
+        }
+        throw new Error(errorMessage)
       }
 
       const data = text ? JSON.parse(text) : {}
-      setStatus('success')
-      setMessage('Uploaded successfully')
-      setDetectedPlate(data.license_plate || null)
+      
+      if (data.success) {
+        setStatus('success')
+        setMessage(data.message || 'Vehicle exit successful')
+        setDetectedPlate(data.license_plate || null)
+        setParkingSlot(data.parking_slot || null)
 
-      if (onUploaded) {
-        onUploaded({
-          rfid_id: data.rfid_id ?? rfid.trim(),
-          license_plate: data.license_plate ?? null,
-          suggested_slot: data.suggested_slot ?? null,
-        })
+        if (onUploaded) {
+          onUploaded({
+            rfid_id: data.rfid_id ?? rfid.trim(),
+            license_plate: data.license_plate ?? null,
+            parking_slot: data.parking_slot ?? null,
+          })
+        }
+      } else {
+        throw new Error(data.message || 'Vehicle exit failed')
       }
     } catch (err) {
       setStatus('error')
       setMessage(err instanceof Error ? err.message : 'Upload failed')
+      setDetectedPlate(null)
+      setParkingSlot(null)
     }
   }
 
   return (
     <div className="bg-white rounded-lg shadow-md overflow-hidden">
-      <div className="bg-gray-800 text-white px-4 py-2 flex items-center justify-between">
+      <div className="bg-red-700 text-white px-4 py-2 flex items-center justify-between">
         <div className="flex items-center space-x-2">
-          <Camera size={20} />
-          <h3 className="font-semibold">CAR IN (Upload)</h3>
+          <LogOut size={20} />
+          <h3 className="font-semibold">CAR OUT (Upload)</h3>
         </div>
       </div>
 
@@ -101,7 +123,7 @@ export default function CarInUpload({ onUploaded }: CarInUploadProps) {
           {previewUrl ? (
             <img
               src={previewUrl}
-              alt="Uploaded car in"
+              alt="Uploaded car out"
               className="w-full h-full object-contain"
             />
           ) : (
@@ -119,7 +141,7 @@ export default function CarInUpload({ onUploaded }: CarInUploadProps) {
             type="text"
             value={rfid}
             onChange={(e) => setRfid(e.target.value)}
-            className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+            className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-black"
             placeholder="Enter RFID ID"
           />
         </div>
@@ -146,10 +168,10 @@ export default function CarInUpload({ onUploaded }: CarInUploadProps) {
             type="button"
             disabled={status === 'uploading'}
             onClick={handleUpload}
-            className="inline-flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            className="inline-flex items-center space-x-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 transition-colors"
           >
-            <Camera size={20} />
-            <span>{status === 'uploading' ? 'Uploading...' : 'Upload to Backend'}</span>
+            <LogOut size={20} />
+            <span>{status === 'uploading' ? 'Processing...' : 'Process Exit'}</span>
           </button>
         </div>
 
@@ -166,12 +188,22 @@ export default function CarInUpload({ onUploaded }: CarInUploadProps) {
           </div>
         )}
 
-        {detectedPlate && (
+        {detectedPlate && status === 'success' && (
           <div className="text-sm text-gray-700 px-3 py-2 bg-white border rounded self-center">
-            <span className="font-semibold">Detected plate:</span> {detectedPlate}
+            <div className="space-y-1">
+              <div>
+                <span className="font-semibold">Detected plate:</span> {detectedPlate}
+              </div>
+              {parkingSlot && (
+                <div>
+                  <span className="font-semibold">Parking slot:</span> {parkingSlot}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
     </div>
   )
 }
+

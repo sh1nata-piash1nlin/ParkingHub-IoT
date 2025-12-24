@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import DashboardLayout from '../components/DashboardLayout'
 import CameraView from '../components/CameraView'
 import CarInUpload from '../components/CarInUpload'
+import CarOutUpload from '../components/CarOutUpload'
 import CarInfo, { CarEvent } from '../components/CarInfo'
 import { Activity, Users, Clock, Camera, RefreshCw } from 'lucide-react'
 
@@ -131,10 +132,20 @@ export default function MenuPage() {
             }}
           />
 
-          {/* Right side: Live camera for CAR OUT */}
-          <CameraView 
-            title="CAR OUT" 
-            streamUrl={carOutStreamUrl}
+          {/* Right side: Upload image for CAR OUT */}
+          <CarOutUpload
+            onUploaded={(payload) => {
+              const now = new Date().toISOString()
+              setCarOutEvent({
+                id: 'local-' + now,
+                rfid_id: payload.rfid_id,
+                license_plate: payload.license_plate,
+                event_type: 'OUT',
+                created_at: now,
+                parking_slot: payload.parking_slot,
+              })
+              fetchRecentEvents()
+            }}
           />
         </div>
 
