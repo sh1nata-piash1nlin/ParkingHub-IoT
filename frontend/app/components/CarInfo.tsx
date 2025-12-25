@@ -9,6 +9,7 @@ export interface CarEvent {
   event_type: string
   created_at: string
   parking_slot: string | null
+  total_money?: number | null
 }
 
 interface CarInfoProps {
@@ -123,6 +124,16 @@ export default function CarInfo({ carInEvent, carOutEvent, loading }: CarInfoPro
                   {new Date(carOutEvent.created_at).toLocaleString()}
                 </span>
               </div>
+              
+              {carOutEvent.total_money !== null && carOutEvent.total_money !== undefined && (
+                <div className="flex items-center space-x-2 pt-2 border-t">
+                  <CreditCard size={16} className="text-green-600" />
+                  <span className="text-sm text-gray-600">Total Amount:</span>
+                  <span className="font-bold text-green-700 text-lg">
+                    {carOutEvent.total_money.toLocaleString('vi-VN')} VND
+                  </span>
+                </div>
+              )}
             </div>
           ) : (
             <p className="text-gray-400 text-sm">No car exit detected</p>

@@ -12,6 +12,7 @@ interface ParkingSession {
   time_out: string | null
   parking_slot: string
   image_path: string
+  total_money?: number | null
 }
 
 export default function HistoryPage() {
@@ -123,6 +124,9 @@ export default function HistoryPage() {
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Parking Slot
                     </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Total Amount
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
@@ -156,6 +160,19 @@ export default function HistoryPage() {
                         <div className="text-sm text-gray-900">
                           {session.parking_slot !== 'N/A' ? session.parking_slot : (
                             <span className="text-gray-400 italic">Not assigned</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="text-sm text-gray-900">
+                          {session.total_money !== null && session.total_money !== undefined ? (
+                            <span className="font-semibold text-green-700">
+                              {session.total_money.toLocaleString('vi-VN')} VND
+                            </span>
+                          ) : (
+                            <span className="text-gray-400 italic">
+                              {session.time_out ? 'N/A' : 'Still parked'}
+                            </span>
                           )}
                         </div>
                       </td>

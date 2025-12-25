@@ -143,6 +143,7 @@ export default function MenuPage() {
                 event_type: 'OUT',
                 created_at: now,
                 parking_slot: payload.parking_slot,
+                total_money: (payload as any).total_money || null,
               })
               fetchRecentEvents()
             }}

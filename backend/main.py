@@ -487,6 +487,47 @@ async def esp32_out_upload(rfid_id: str = Query(...), request: Request = None):
             # Get parking slot from the IN event
             parking_slot = active_in_event.get("parking_slot")
 
+            # Calculate total_money based on parking duration
+            # 1 minute = 10,000 VND
+            time_in_str = active_in_event.get("created_at")
+            time_out = datetime.utcnow()
+            
+            total_money = None
+            if time_in_str:
+                try:
+                    # Parse time_in from ISO format string
+                    # Handle ISO format with or without timezone
+                    time_in_parsed = time_in_str
+                    if time_in_parsed.endswith('Z'):
+                        time_in_parsed = time_in_parsed[:-1] + '+00:00'
+                    elif '+' not in time_in_parsed and time_in_parsed.count('-') <= 2:
+                        # Naive datetime, assume UTC
+                        pass
+                    
+                    # Try parsing with timezone first
+                    try:
+                        time_in = datetime.fromisoformat(time_in_parsed)
+                        if time_in.tzinfo:
+                            # Convert to UTC naive datetime
+                            time_in = (time_in - time_in.utcoffset()).replace(tzinfo=None)
+                    except:
+                        # Fallback to naive datetime parsing
+                        time_in = datetime.fromisoformat(time_in_str.replace('Z', ''))
+                    
+                    # Calculate duration in minutes
+                    duration = time_out - time_in
+                    duration_minutes = max(0, duration.total_seconds() / 60.0)  # Ensure non-negative
+                    
+                    # Calculate total money: duration_minutes * 10000 VND
+                    # Round to 2 decimal places
+                    total_money = round(duration_minutes * 10000, 2)
+                    
+                    print(f"Parking duration: {duration_minutes:.2f} minutes, Total: {total_money:.2f} VND")
+                except Exception as time_error:
+                    print(f"Error calculating parking duration: {time_error}")
+                    traceback.print_exc()
+                    total_money = None
+
             # Insert OUT event into parking_events table
             event_data = {
                 "id": str(uuid.uuid4()),
@@ -496,6 +537,7 @@ async def esp32_out_upload(rfid_id: str = Query(...), request: Request = None):
                 "parking_slot": parking_slot,
                 "license_plate": plate_text,
                 "event_type": "OUT",
+                "total_money": total_money,
             }
 
             db_response = supabase.table("parking_events").insert(event_data).execute()
@@ -511,6 +553,7 @@ async def esp32_out_upload(rfid_id: str = Query(...), request: Request = None):
                 "rfid_id": rfid_id,
                 "license_plate": plate_text,
                 "parking_slot": parking_slot,
+                "total_money": total_money,
                 "message": "Vehicle exit successful",
             }
 
@@ -592,8 +635,10 @@ async def get_parking_sessions(limit: int = 100, offset: int = 0):
                 # Check if there's a previous open session for this RFID
                 if rfid_id in rfid_sessions:
                     # Close the previous session (time_out = time of this new IN event)
+                    # No total_money since it wasn't closed with an OUT event
                     prev_session = rfid_sessions[rfid_id]
                     prev_session["time_out"] = created_at
+                    prev_session["total_money"] = None
                     sessions.append(prev_session)
 
                 # Start new session
@@ -611,6 +656,8 @@ async def get_parking_sessions(limit: int = 100, offset: int = 0):
                 # Close the current session for this RFID
                 if rfid_id in rfid_sessions:
                     rfid_sessions[rfid_id]["time_out"] = created_at
+                    # Include total_money from the OUT event
+                    rfid_sessions[rfid_id]["total_money"] = event.get("total_money")
                     sessions.append(rfid_sessions[rfid_id])
                     del rfid_sessions[rfid_id]
 

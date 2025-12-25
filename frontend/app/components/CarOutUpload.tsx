@@ -8,6 +8,7 @@ interface CarOutUploadProps {
     rfid_id: string
     license_plate: string | null
     parking_slot: string | null
+    total_money?: number | null
   }) => void
 }
 
@@ -20,6 +21,7 @@ export default function CarOutUpload({ onUploaded }: CarOutUploadProps) {
   const [message, setMessage] = useState<string | null>(null)
   const [detectedPlate, setDetectedPlate] = useState<string | null>(null)
   const [parkingSlot, setParkingSlot] = useState<string | null>(null)
+  const [totalMoney, setTotalMoney] = useState<number | null>(null)
 
   const handleChooseFile = () => {
     fileInputRef.current?.click()
@@ -51,6 +53,7 @@ export default function CarOutUpload({ onUploaded }: CarOutUploadProps) {
       setMessage(null)
       setDetectedPlate(null)
       setParkingSlot(null)
+      setTotalMoney(null)
 
       // For out-upload, we need to send the image as raw bytes (like ESP32 does)
       // First, convert file to blob, then to array buffer
@@ -90,12 +93,14 @@ export default function CarOutUpload({ onUploaded }: CarOutUploadProps) {
         setMessage(data.message || 'Vehicle exit successful')
         setDetectedPlate(data.license_plate || null)
         setParkingSlot(data.parking_slot || null)
+        setTotalMoney(data.total_money || null)
 
         if (onUploaded) {
           onUploaded({
             rfid_id: data.rfid_id ?? rfid.trim(),
             license_plate: data.license_plate ?? null,
             parking_slot: data.parking_slot ?? null,
+            total_money: data.total_money ?? null,
           })
         }
       } else {
@@ -106,6 +111,7 @@ export default function CarOutUpload({ onUploaded }: CarOutUploadProps) {
       setMessage(err instanceof Error ? err.message : 'Upload failed')
       setDetectedPlate(null)
       setParkingSlot(null)
+      setTotalMoney(null)
     }
   }
 
@@ -199,6 +205,14 @@ export default function CarOutUpload({ onUploaded }: CarOutUploadProps) {
                   <span className="font-semibold">Parking slot:</span> {parkingSlot}
                 </div>
               )}
+              {totalMoney !== null && (
+                <div className="pt-2 border-t mt-2">
+                  <span className="font-semibold text-green-600">Total amount:</span>{' '}
+                  <span className="text-lg font-bold text-green-700">
+                    {totalMoney.toLocaleString('vi-VN')} VND
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -206,4 +220,5 @@ export default function CarOutUpload({ onUploaded }: CarOutUploadProps) {
     </div>
   )
 }
+
 
